@@ -1,0 +1,4 @@
+ chr(0) 
+NULL
+There are currently 33 open connections and 167 connections available 
+	 (with an additional 3 connections reserved)

@@ -1,5 +1,27 @@
 #!/usr/bin/env Rscript
+args = commandArgs(trailingOnly=TRUE)
+if (length(args)!=0) {
+  str(args)
+  class(args)
+  print(args)
+  cat(args)
+}
+# 
+# # example planned arguments
+# ./rna_central_connection_count.R --out_format csv --data_store_path /data/data_store_rnacen --data_store_expiry_days 30
+# chr [1:6] "--out_format" "csv" "--data_store_path" ...
+# [1] "--out_format"             "csv"                     
+# [3] "--data_store_path"        "/data/data_store_rnacen" 
+# [5] "--data_store_expiry_days" "30"                      
+# --out_format csv --data_store_path /data/data_store_rnacen --data_store_expiry_days 30
+#
+#Loading required package: pacman
+# There are currently 37 open connections and 163 connections available 
+# (with an additional 3 connections reserved)
+
+
 # Notes:
+# Allways expectes long named arguments.
 # - This script discards any column from the postgres database that
 # has a data type of "blob/raw"
 # - Play nice with the public database ! 
@@ -127,7 +149,8 @@ load_write_query <- function (
           queryName = queryName,
           dbConnection = dbConnection,
           expiry_days = expiry_days,
-          data_directory = data_directory
+          data_directory = data_directory,
+          silent = silent
         )
       }
     }
@@ -173,16 +196,19 @@ info_current_connection_count <- load_write_query(
       ), 
     dbConnection=con, 
     expiry_days=-1, # this particular query always should expire!
-    data_directory= data_store_path
+    data_directory= data_store_path,
+    silent = TRUE
 )
 
+
+
 cat(
-  '\nThere are currently',
+  'There are currently',
   as.integer(info_current_connection_count$used[1]),
   'open connections and',
-  as.integer(info_current_connection_count$max_conn[1]) -
+  as.integer(info_current_connection_count$max_conn[1]) - 
     as.integer(info_current_connection_count$used[1]),
-  'connections available (with an additional',
+  'connections available \n\t (with an additional',
   as.integer(info_current_connection_count$res_for_super[1]),
   'connections reserved)\n'
 )  
