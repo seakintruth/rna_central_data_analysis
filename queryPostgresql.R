@@ -20,6 +20,16 @@ should_run_query <- function(target_file,expiry_days) {
     TRUE
   }
 }
+
+firstClass <- function(x){
+  class(x)[[1]]
+}
+
+remove_invalid_fields <- function(x){
+  x %>% 
+    select_if(!sapply(., firstClass) %in% c("blob"))
+}
+
 dbQuery_as_data_frame <- function (query,dbConnection){
   res <- con |> dbSendQuery(query)
   # fetch all results: 
@@ -28,6 +38,7 @@ dbQuery_as_data_frame <- function (query,dbConnection){
   res |> dbClearResult() 
   tmp_Results |> as.data.frame()
 }
+
 load_write_table <- function (
     tableName, 
     dbConnection, 
@@ -38,6 +49,10 @@ load_write_table <- function (
   objectName = tableName |> 
     stringr::str_replace_all("\\.","_") |>
     stringr::str_replace_all(" ","_")
+  cat(
+    "\n querying object:",
+    objectName
+  )
   target_path <- data_directory |> 
     file.path(paste0(objectName,".feather"))
   if(
@@ -60,17 +75,42 @@ load_write_table <- function (
       #return nothing
       NULL
     } else {
+      base::assign(
+        objectName, 
+        base::get(objectName) |>
+          remove_blob_fields()
+      )
       feather::write_feather(
         base::get(objectName), 
         target_path
       )
     }
   } else { #load from file
-    base::assign(
-      objectName, 
-      file.path(data_directory,paste0(objectName,".feather")) |>
-        feather::read_feather()
+    attempt <- try({
+        tmpResult <- target_path |>
+          feather::read_feather()
+      }
     )
+    if(class(attempt) == "try-error") {
+      fCancel <- TRUE
+      # delete the file that we attempted to load, and try again
+      if (file.exists(target_path)) {
+        file.remove(target_path)
+      }
+      if (!file.exists(target_path)) {
+        load_write_table(
+          tableName = tableName,
+          dbConnection = dbConnection,
+          expiry_days = expiry_days,
+          data_directory = data_directory
+        )
+      }
+    } else {
+      base::assign(
+        objectName, 
+        tmpResult
+      )
+    }
   }
   if (fCancel == TRUE){
     # return nothing
@@ -123,22 +163,25 @@ list_dictionary_schema_table <-  stringr::str_c(
   sep='.'
 )
 
-# This loads the entire database into memory, you likely don't have enough RAM!
-all_data <- lapply(list_schema_table, 
-       FUN=load_write_table, 
-       dbConnection =  con,
-       expiry_days = data_store_expiry_days,
-       data_directory = data_store_path
-)
-
-# This loads the entire data dictionary of the database into memory, RAM shouldn't be an issue
-dictionary_data <- 
+# dictionary_data <- 
   lapply(list_dictionary_schema_table, 
          FUN=load_write_table, 
          dbConnection =  con,
          expiry_days = data_store_expiry_days,
          data_directory = data_store_path
   )
+
+
+# storing the entire database in memory is not a good idea
+# (you will run out of RAM)
+# all_data <-
+  lapply(list_schema_table, 
+       FUN=load_write_table, 
+       dbConnection =  con,
+       expiry_days = data_store_expiry_days,
+       data_directory = data_store_path
+)
+
   
 
 # 
