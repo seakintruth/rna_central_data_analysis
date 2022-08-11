@@ -1,3 +1,4 @@
+#!/usr/bin/env Rscript
 # Notes:
 # - This script discards any column from the postgres database that
 # has a data type of "blob/raw"
@@ -61,7 +62,7 @@ load_write_query <- function (
     data_directory
 ){
   # If no query is passed assuming queryName is a table or view & retrieve all
-  if(!is.null(query)) query <- paste0('SELECT * FROM ',queryName) 
+  if(is.null(query)) query <- paste0('SELECT * FROM ',queryName) 
   # replaces all punctuation that might exist in the queryName with an Underscore
   objectName = queryName |> 
     str_replace_all("[[:punct:]]", "_")
@@ -97,7 +98,7 @@ load_write_query <- function (
       base::assign(
         objectName, 
         base::get(objectName) |>
-          remove_blob_fields()
+          remove_invalid_fields()
       )
       feather::write_feather(
         base::get(objectName), 
@@ -167,7 +168,7 @@ dbRna_list_tables_all <- load_write_query (
 
 dbRna_list_tables <- dbRna_list_tables_all |> 
   dplyr::filter(table_schema == data_schema_name) 
-  # could drop views with:  & table_type == 'BASE TABLE')
+# could drop views with:  & table_type == 'BASE TABLE')
 
 list_schema_table <-  stringr::str_c(
   dbRna_list_tables$table_schema,
@@ -185,23 +186,12 @@ list_dictionary_schema_table <-  stringr::str_c(
 )
 
 dictionary_data <- 
-lapply(list_dictionary_schema_table, 
-       FUN=load_write_query, 
-       dbConnection =  con,
-       expiry_days = data_store_expiry_days,
-       data_directory = data_store_path
-)
-
-# # storing the entire database in memory is not a good idea
-# # (you will run out of RAM)
-# # the following will attempt to download every rnacen table
-# # all_data <-
-# lapply(list_schema_table,
-#        FUN=load_write_query,
-#        dbConnection =  con,
-#        expiry_days = data_store_expiry_days,
-#        data_directory = data_store_path
-# )
-
+  lapply(list_dictionary_schema_table, 
+         FUN=load_write_query, 
+         dbConnection =  con,
+         expiry_days = data_store_expiry_days,
+         data_directory = data_store_path
+  )
+  
 # Disconnect from the database 
 dbDisconnect(con)
