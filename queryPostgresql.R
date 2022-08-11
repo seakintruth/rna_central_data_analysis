@@ -193,5 +193,33 @@ dictionary_data <-
          data_directory = data_store_path
   )
   
+
+# This query comes from: https://stackoverflow.com/a/53208173
+info_current_connection_count <- load_write_query(
+    queryName="info_current_connection_count",
+    query = 
+      paste0(
+        'select  * from ',
+        '(select count(*) used from pg_stat_activity) q1, ',
+        '(select setting::int res_for_super from pg_settings where name=$$superuser_reserved_connections$$) q2, ',
+        '(select setting::int max_conn from pg_settings where name=$$max_connections$$) q3'
+      ), 
+    dbConnection=con, 
+    expiry_days=-1, # this particular query always should expire!
+    data_directory= data_store_path
+)
+
+cat(
+  '\nThere are currently',
+  as.integer(info_current_connection_count$used[1]),
+  'open connections and',
+  as.integer(info_current_connection_count$max_conn[1]) -
+    as.integer(info_current_connection_count$used[1]),
+  'connections available (with an additional',
+  as.integer(info_current_connection_count$res_for_super[1]),
+  'connections reserved)\n'
+)  
+
+
 # Disconnect from the database 
 dbDisconnect(con)
