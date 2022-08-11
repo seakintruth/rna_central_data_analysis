@@ -161,55 +161,8 @@ if (!dir.exists(data_store_path)) {
   dir.create(data_store_path,showWarnings=FALSE)
 }
 
-# information_schema is not available...
-dbRna_list_tables_all <- load_write_query (
-  queryName = 'information_schema.tables',
-  dbConnection =  con,
-  expiry_days = data_store_expiry_days,
-  data_directory = data_store_path
-)
-
-dbRna_list_tables <- dbRna_list_tables_all |> 
-  dplyr::filter(table_schema == data_schema_name) 
-# could drop views with:  & table_type == 'BASE TABLE')
-
-list_schema_table <-  stringr::str_c(
-  dbRna_list_tables$table_schema,
-  dbRna_list_tables$table_name,
-  sep='.'
-)
-
-dbRna_list_dictionary_tables <- dbRna_list_tables_all |> 
-  dplyr::filter(table_schema != data_schema_name) 
-
-list_dictionary_schema_table <-  stringr::str_c(
-  dbRna_list_dictionary_tables$table_schema,
-  dbRna_list_dictionary_tables$table_name,
-  sep='.'
-)
-
-# dictionary_data <- 
-#   lapply(list_dictionary_schema_table, 
-#          FUN=load_write_query, 
-#          dbConnection =  con,
-#          expiry_days = data_store_expiry_days,
-#          data_directory = data_store_path
-#   )
-# 
-# # # storing the entire database in memory is not a good idea
-# # # (you will run out of RAM)
-# # # the following will attempt to download every rnacen table
-# # # all_data <-
-# lapply(list_schema_table,
-#        FUN=load_write_query,
-#        dbConnection =  con,
-#        expiry_days = data_store_expiry_days,
-#        data_directory = data_store_path
-# )
-# 
-
-
- load_write_query(
+# This query comes from: https://stackoverflow.com/a/53208173
+info_current_connection_count <- load_write_query(
     queryName="info_current_connection_count",
     query = 
       paste0(
@@ -219,14 +172,20 @@ list_dictionary_schema_table <-  stringr::str_c(
         '(select setting::int max_conn from pg_settings where name=$$max_connections$$) q3'
       ), 
     dbConnection=con, 
-    expiry_days=data_store_expiry_days,
+    expiry_days=-1, # this particular query always should expire!
     data_directory= data_store_path
 )
-  
 
-
-
+cat(
+  '\nThere are currently',
+  as.integer(info_current_connection_count$used[1]),
+  'open connections and',
+  as.integer(info_current_connection_count$max_conn[1]) -
+    as.integer(info_current_connection_count$used[1]),
+  'connections available (with an additional',
+  as.integer(info_current_connection_count$res_for_super[1]),
+  'connections reserved)\n'
+)  
 
 # Disconnect from the database 
 dbDisconnect(con)
-
