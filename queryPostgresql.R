@@ -1,27 +1,48 @@
 #!/usr/bin/env Rscript
 # Notes:
-# - Can be run as a script by 'Rscript' there are no short named arguments.
-# - This script discards any column from the postgres database that
-# has a data type of "blob/raw"
-# - Play nice with the public database ! 
-# - Using feather to save downloads to disk, and only query the database if 
-# a previous download has expired (is older than x number of days).
-# - Working with some large data sets here,  
-# using data.table in place of data.frame through out
+script_notes <- paste0(
+  "\nLinux Usage: queryPostgresql.R [OPTIONS]...\n",
+  "Windows Usage: Rscript.exe queryPostgresql.R [OPTIONS]...\n\n",
+  "- This script discards any column from the postgres database thathas a data type of 'blob/raw'\n",
+  "Only long options are accepted, all CLI arguments (except `--help`) \n",
+  "must be key value pairs in the format of `--key value`\n",
+  "  --help             Dislpays this help-doc\n",
+  "  --data_store_path  [string] Where results are stored (feather format), defaults to file.path(Sys.getenv('HOME'),'R_TEMP) \n",
+  "  --data_store_expiry_days     [int / float ] Number of days that the on disk files are prefred over querying the postgres database\n",
+  "  --out_format       [not implemented] valid value is `csv` Format of stdout messages, by default verbose descriptive\n"
+)
+
 if (!require("pacman")) install.packages("pacman")
 pacman::p_load(DBI,RPostgres,RPostgreSQL,feather,dplyr,data.table,stringr)
 
+# Handle expected arguments if running in Rscript from CLI
 args = commandArgs(trailingOnly=TRUE)
 if (length(args)!=0) {
   dfArgs <- matrix(args,ncol=2,byrow=TRUE) |>
     as.data.frame() 
   names(dfArgs) <- c("arg","value")
-  dfArg_data_store_path <- dfArgs |>
-    subset(arg == '--data_store_path')$value
-  dfArg_data_store_expiry_days <- dfArgs |> 
-    subset(arg == '--data_store_expiry_days')$value
+  
+  # Handle any --help argument
+  dfArg_help <- dfArgs |> 
+  subset(arg == '--help') |> length() > 0
+  # if --help was called then return this help information to stdout
+  if (dfArg_help){
+      script_notes |> cat()
+    stop("if any CLI argument is --help, help-doc is returned and script exits")
+  }
+  # Assign arguments to variables
+  # need to add handling with and without quotes, and odd file separators.
+  dfArg_data_store_path <- subset(dfArgs, arg == '--data_store_path')$value
+  dfArg_data_store_expiry_days <- subset(dfArgs, arg == '--data_store_expiry_days')$value
   # WIP:not implemented yet:
-  # dfArg_out_format <- subset(dfArgs,arg == '--out_format')$value
+  dfArg_out_format <- subset(dfArgs,arg == '--out_format')$value
+} else {
+  dfArg_help <- NULL
+  # Assign arguments to variables
+  dfArg_data_store_path <- NULL
+  dfArg_data_store_expiry_days <- NULL
+  # WIP:not implemented yet:
+  dfArg_out_format <- NULL
 }
 
 # 
@@ -37,7 +58,7 @@ if (length(args)!=0) {
 data_schema_name <- 'rnacen'
 
 if(length(dfArg_data_store_expiry_days) == 1) {
-  dfArg_data_store_expiry_days
+  data_store_expiry_days <- dfArg_data_store_expiry_days
 } else {
   data_store_expiry_days <- 30
 }
@@ -125,14 +146,6 @@ load_write_query <- function (
   # replaces all punctuation that might exist in the queryName with an Underscore
   objectName = queryName |> 
     str_replace_all("[[:punct:]]", "_")
-  if (!silent){
-    cat(
-      "\n querying object:",
-      objectName,
-      " with query: {",
-      query,"}"
-    )
-  }
   fCancel <- FALSE
   target_path <- data_directory |> 
     file.path(paste0(objectName,".feather"))
@@ -142,6 +155,14 @@ load_write_query <- function (
       expiry_days = expiry_days
     )
   ){
+    if (!silent){
+      cat(
+        "\n querying object:",
+        objectName,
+        " with query: {",
+        query,"}"
+      )
+    }
     attempt <- try(
       base::assign(
         objectName, 
@@ -167,6 +188,12 @@ load_write_query <- function (
       )
     }
   } else { #load from file
+    if (!silent){
+      cat(
+        "\n loading object from file:",
+        objectName
+      )
+    }
     attempt <- try(
       base::assign(
         objectName, 
@@ -194,20 +221,11 @@ load_write_query <- function (
     # return nothing
     NULL
   } else {
-    # add a column that contains queryName (so we know the provinence of the data)
-    df_named_value <- as_tibble(queryName)
-    names(df_named_value) <- ".object_name"
-    base::assign(
-      objectName, 
-      base::get(objectName) |> 
-        tibble::add_column(
-          df_named_value,
-          .name_repair = "universal",
-          .before = 1
-        )
-    )
     # return object
-    base::get(objectName)
+    list(
+      objectName,
+      base::get(objectName)
+    )
   }
 }
 
@@ -227,7 +245,7 @@ dbRna_list_tables_all <- load_write_query (
   data_directory = data_store_path
 )
 
-dbRna_list_tables <- dbRna_list_tables_all |> 
+dbRna_list_tables <- dbRna_list_tables_all[[2]] |> 
   dplyr::filter(table_schema == data_schema_name) 
 # could drop views with:  & table_type == 'BASE TABLE')
 
@@ -237,7 +255,7 @@ list_schema_table <-  stringr::str_c(
   sep='.'
 )
 
-dbRna_list_dictionary_tables <- dbRna_list_tables_all |> 
+dbRna_list_dictionary_tables <- dbRna_list_tables_all[[2]] |> 
   dplyr::filter(table_schema != data_schema_name) 
 
 list_dictionary_schema_table <-  stringr::str_c(
