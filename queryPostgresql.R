@@ -1,17 +1,52 @@
 #!/usr/bin/env Rscript
 # Notes:
+# - Can be run as a script by 'Rscript' there are no short named arguments.
 # - This script discards any column from the postgres database that
 # has a data type of "blob/raw"
 # - Play nice with the public database ! 
 # - Using feather to save downloads to disk, and only query the database if 
 # a previous download has expired (is older than x number of days).
+# - Working with some large data sets here,  
+# using data.table in place of data.frame through out
 if (!require("pacman")) install.packages("pacman")
 pacman::p_load(DBI,RPostgres,RPostgreSQL,feather,dplyr,data.table,stringr)
 
+args = commandArgs(trailingOnly=TRUE)
+if (length(args)!=0) {
+  dfArgs <- matrix(args,ncol=2,byrow=TRUE) |>
+    as.data.frame() 
+  names(dfArgs) <- c("arg","value")
+  dfArg_data_store_path <- dfArgs |>
+    subset(arg == '--data_store_path')$value
+  dfArg_data_store_expiry_days <- dfArgs |> 
+    subset(arg == '--data_store_expiry_days')$value
+  # WIP:not implemented yet:
+  # dfArg_out_format <- subset(dfArgs,arg == '--out_format')$value
+}
+
+# 
+# # example planned arguments
+# ./rna_central_connection_count.R --out_format csv --data_store_path /data/data_store_rnacen --data_store_expiry_days 30
+# chr [1:6] "--out_format" "csv" "--data_store_path" ...
+# [1] "--out_format"             "csv"                     
+# [3] "--data_store_path"        "/data/data_store_rnacen" 
+# [5] "--data_store_expiry_days" "30"                      
+# --out_format csv --data_store_path /data/data_store_rnacen --data_store_expiry_days 30
+
 # Script scoped variable, could be wrapped up as inputs to a main function...
 data_schema_name <- 'rnacen'
-data_store_expiry_days <- 30
-data_store_path <- file.path(Sys.getenv('HOME'),"R_TEMP")
+
+if(length(dfArg_data_store_expiry_days) == 1) {
+  dfArg_data_store_expiry_days
+} else {
+  data_store_expiry_days <- 30
+}
+
+if(length(dfArg_data_store_path) == 1) {
+  data_store_path <- dfArg_data_store_path
+} else {
+  data_store_path <- file.path(Sys.getenv('HOME'),"R_TEMP")
+}
 
 # Connect to a specific postgres database i.e. Heroku 
 # https://rnacentral.org/help/public-database 
@@ -50,13 +85,31 @@ remove_invalid_fields <- function(x){
     select_if(!sapply(., firstClass) %in% c("blob"))
 }
 
-dbQuery_as_data_frame <- function (query,dbConnection){
-  res <- con |> dbSendQuery(query)
-  # fetch all results: 
-  tmp_Results <- res |> dbFetch() 
-  # clear restults and close connection
-  res |> dbClearResult() 
-  tmp_Results |> as.data.frame()
+dbQuery_as_data_table <- function (
+    query,
+    dbConnection,
+    by_row_number = 0
+){
+  res <- con |>
+    dbSendQuery(query)
+  # fetch all results:
+  if (by_row_number == 0){
+    tmp_Results <- res |>
+      dbFetch()|> 
+      as.data.table()
+  } else {
+    while(!dbHasCompleted(res)){
+      tmp_Results <- res |>
+        dbFetch( n = by_row_number) |> 
+        as.data.table()
+      tmp_Results |> nrow() |> print()
+    }
+  }
+  # clear results and close connection
+  res |>
+    dbClearResult()
+  rm(res)
+  tmp_Results 
 }
 
 load_write_query <- function (
@@ -93,7 +146,7 @@ load_write_query <- function (
       base::assign(
         objectName, 
         query |> 
-          dbQuery_as_data_frame(dbConnection)
+          dbQuery_as_data_table(dbConnection)
       )
     )
     if(class(attempt)[1] == "try-error") {
@@ -212,7 +265,7 @@ load_write_table_size <- function(table_name,dbConnection){
     "pg_total_relation_size('",table_name,"') as size ",
     "FROM  (select 1) as sole"
   )  
-  dbQuery_as_data_frame(
+  dbQuery_as_data_table(
       query = query,
       dbConnection = dbConnection
     ) |>
@@ -241,16 +294,40 @@ df_info_db_table_size$size <- df_info_db_table_size$size |>
 
 #filter list of table names to those that are > 1 GB
 df_large_table <- df_info_db_table_size |> 
-  dplyr::filter(size > 2^30) |>
-  dplyr::select(table_name)
+  dplyr::filter(size > 2^30) |> 
+  dplyr::arrange(desc(size)) 
+head(df_large_table)
+tail(df_large_table)
+
 
 #filter list of table names to those that are <= 1 GB
 df_small_table <- df_info_db_table_size |> 
-  dplyr::filter(size <= 2^30) |>
-  dplyr::select(table_name)
+  dplyr::filter(size <= 2^30 & size > 0) |> 
+  dplyr::arrange(desc(size)) 
+
+head(df_small_table)
+tail(df_small_table)
+
+# Total database size (without pipes |>)
+cat(
+  round(
+    sum(
+      df_info_db_table_size$size
+    )/2^30,
+    2
+  ), "GB"
+)
+
+# Total database size (with only pipes |>)
+divide <- function (x,y){x/y}
+df_info_db_table_size$size |> 
+  sum() |>
+  divide(2^30) |> # one GB
+  round(2) |> 
+  cat("GB")
 
 # # # storing the entire database in memory is not a good idea
-# # # (you will run out of RAM)
+# # # (you will run out of RAM, nearing half a TB)
 # # # the following will attempt to download every rnacen table
 # # # all_data <-
 # lapply(list_schema_table,
@@ -268,19 +345,24 @@ lapply(df_small_table$table_name,
        data_directory = data_store_path
 )
 
-# Large tables will need to be handled differently...
-# df_large_table$table_name
-# Example of how to fetch data a chunk at a time
-# res <- dbSendQuery(con, "SELECT * FROM rnc_database")
-# while(!dbHasCompleted(res)){
-#   chunk <- dbFetch(res, n = 50)
-#   print(nrow(chunk))
-# }
-# str(res)
-# # Clear the result
-# dbClearResult(res)
+# # Large tables would need to be handled differently, 
+# # fetch in chunks, and store in subsets of N rows, 
+# # or custom filter for each of the 26 large tables.
+# # df_large_table$table_name
+# # load all large tables 
+# lapply(df_large_table$table_name,
+#        FUN=load_write_query,
+#        dbConnection =  con,
+#        expiry_days = data_store_expiry_days,
+#        data_directory = data_store_path
+# )
+# 
 
+
+
+####################################################
 # the following still needs operational testing
+####################################################
 if(
    should_run_query(
      file.path(data_store_path,"dbRna_table_has_field.feather"),
@@ -341,6 +423,7 @@ if(
    }
    # [End TODO]
    rm(dbRna_possible_fields)
+   
    
    dbRna_table_has_field |>
      feather::write_feather(
@@ -409,10 +492,11 @@ if(
        'FROM "', schema_table_name, '" '
        #, 'WHERE "', schema_table_name, '"."',field_name_of_numeric,'" IS NOT NULL'
      )
-   query |> dbQuery_as_data_frame(dbConnection=dbConnection)
+   query |> dbQuery_as_data_table(dbConnection=dbConnection)
  }
+
  
-db_timestamp_stats <- tables_with_create_field[,1] |>
+ db_timestamp_stats <- tables_with_create_field[,1] |>
  lapply(FUN=query_numeric_field_stats, dbConnect=con)
 
 db_timestamp_stats |> skimr::skim()
@@ -421,3 +505,12 @@ db_timestamp_stats |> summary()
 # Disconnect from the database 
 dbDisconnect(con)
 
+object_memory_useage <- sort(sapply(ls(all.names = TRUE),function(x){object.size(get(x))}),
+                             decreasing = TRUE)
+
+cat("RAM Allocation total is",
+    (sum(object_memory_useage)/2^20) |> round(2),
+    "MB; by object:",
+    (object_memory_useage/2^20) |> 
+      round(2) |> paste0(" MB")
+)
