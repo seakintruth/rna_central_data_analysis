@@ -44,7 +44,6 @@ if (length(args)!=0) {
   # WIP:not implemented yet:
   dfArg_out_format <- NULL
 }
-
 # 
 # # example planned arguments
 # ./rna_central_connection_count.R --out_format csv --data_store_path /data/data_store_rnacen --data_store_expiry_days 30
@@ -271,7 +270,6 @@ dictionary_data <-
          expiry_days = data_store_expiry_days,
          data_directory = data_store_path
   )
-
 is.integer64 <- function(x){
   class(x)=="integer64"
 }
@@ -292,11 +290,13 @@ load_write_table_size <- function(table_name,dbConnection){
 }
 
 #get a list of all tables and their sizes
+# [TODO] These results should also be written to file
 info_db_table_size <- list_schema_table  |> 
   lapply(
     FUN=load_write_table_size,
     dbConnection = con
   )
+
 
 df_info_db_table_size <- info_db_table_size |>
   unlist() |>
@@ -344,6 +344,15 @@ df_info_db_table_size$size |>
   round(2) |> 
   cat("GB")
 
+# load all small tables to disk (don't store results to object)
+lapply(df_small_table$table_name,
+       FUN=load_write_query,
+       dbConnection =  con,
+       expiry_days = data_store_expiry_days,
+       data_directory = data_store_path
+)
+
+######## following Needs fixes to modified return from list_dictionary_schema_table
 # # # storing the entire database in memory is not a good idea
 # # # (you will run out of RAM, nearing half a TB)
 # # # the following will attempt to download every rnacen table
@@ -354,14 +363,6 @@ df_info_db_table_size$size |>
 #        expiry_days = data_store_expiry_days,
 #        data_directory = data_store_path
 # )
-
-# load all small tables 
-lapply(df_small_table$table_name,
-       FUN=load_write_query,
-       dbConnection =  con,
-       expiry_days = data_store_expiry_days,
-       data_directory = data_store_path
-)
 
 # # Large tables would need to be handled differently, 
 # # fetch in chunks, and store in subsets of N rows, 
