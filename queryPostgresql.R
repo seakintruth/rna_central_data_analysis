@@ -24,6 +24,25 @@ con <- dbConnect(
   password = 'NWDMCE5xdipIjRrp' 
 ) 
 
+is.integer64 <- function(x){
+  class(x)=="integer64"
+}
+
+load_write_table_size <- function(table_name,dbConnection){
+  query = paste0(
+    "SELECT pg_size_pretty(pg_total_relation_size('",table_name,"')) ",
+    "as pretty_size ,",
+    "pg_total_relation_size('",table_name,"') as size ",
+    "FROM  (select 1) as sole"
+  )  
+  dbQuery_as_data_frame(
+    query = query,
+    dbConnection = dbConnection
+  ) |>
+    cbind(table_name) |>
+    mutate_if(is.integer64, as.numeric)
+}
+
 #---------------------------
 # Script Functions
 #---------------------------
@@ -65,21 +84,15 @@ load_write_query <- function (
     dbConnection, 
     expiry_days,
     data_directory, 
-    silent = FALSE
+    silent = FALSE,
+    return_nothing = FALSE
 ){
   # If no query is passed assuming queryName is a table or view & retrieve all
   if(is.null(query)) query <- paste0('SELECT * FROM ',queryName) 
   # replaces all punctuation that might exist in the queryName with an Underscore
   objectName = queryName |> 
     str_replace_all("[[:punct:]]", "_")
-  if (!silent){
-    cat(
-      "\n querying object:",
-      objectName,
-      " with query: {",
-      query,"}"
-    )
-  }
+  gc()
   fCancel <- FALSE
   target_path <- data_directory |> 
     file.path(paste0(objectName,".feather"))
@@ -89,6 +102,14 @@ load_write_query <- function (
       expiry_days = expiry_days
     )
   ){
+    if (!silent){
+      cat(
+        "\n querying object:",
+        objectName,
+        " with query: {",
+        query,"}"
+      )
+    }
     attempt <- try(
       base::assign(
         objectName, 
@@ -113,7 +134,13 @@ load_write_query <- function (
         target_path
       )
     }
-  } else { #load from file
+  } else if (!return_nothing) { #load from file
+    if (!silent){
+      cat(
+        "\n loading from file object:",
+        objectName
+      )
+    }
     attempt <- try(
       base::assign(
         objectName, 
@@ -137,7 +164,7 @@ load_write_query <- function (
       }
     }
   }
-  if (fCancel == TRUE){
+  if (fCancel == TRUE | return_nothing == TRUE){
     # return nothing
     NULL
   } else {
@@ -153,6 +180,7 @@ load_write_query <- function (
           .before = 1
         )
     )
+    gc()
     # return object
     base::get(objectName)
   }
@@ -198,27 +226,9 @@ dictionary_data <-
          FUN=load_write_query,
          dbConnection =  con,
          expiry_days = data_store_expiry_days,
-         data_directory = data_store_path
+         data_directory = data_store_path,
+         
   )
-
-is.integer64 <- function(x){
-  class(x)=="integer64"
-}
-
-load_write_table_size <- function(table_name,dbConnection){
-  query = paste0(
-    "SELECT pg_size_pretty(pg_total_relation_size('",table_name,"')) ",
-    "as pretty_size ,",
-    "pg_total_relation_size('",table_name,"') as size ",
-    "FROM  (select 1) as sole"
-  )  
-  dbQuery_as_data_frame(
-      query = query,
-      dbConnection = dbConnection
-    ) |>
-    cbind(table_name) |>
-    mutate_if(is.integer64, as.numeric)
-}
 
 #get a list of all tables and their sizes
 info_db_table_size <- list_schema_table  |> 
@@ -265,7 +275,8 @@ lapply(df_small_table$table_name,
        FUN=load_write_query,
        dbConnection =  con,
        expiry_days = data_store_expiry_days,
-       data_directory = data_store_path
+       data_directory = data_store_path,
+       return_nothing = TRUE
 )
 
 # Large tables will need to be handled differently...
