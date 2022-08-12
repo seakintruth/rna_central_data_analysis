@@ -1,12 +1,28 @@
 #!/usr/bin/env Rscript
+# Notes:
+# - Can be run as a script by 'Rscript' there are no short named arguments.
+# - This script discards any column from the postgres database that
+# has a data type of "blob/raw"
+# - Play nice with the public database ! 
+# - Using feather to save downloads to disk, and only query the database if 
+# a previous download has expired (is older than x number of days).
+# - Working with some large data sets here,  
+# using data.table in place of data.frame through out
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(DBI,RPostgres,RPostgreSQL,feather,dplyr,data.table,stringr)
+
 args = commandArgs(trailingOnly=TRUE)
 if (length(args)!=0) {
-  str(args)
-  class(args)
-  print(args)
-  cat(args)
+  dfArgs <- matrix(args,ncol=2,byrow=TRUE) |>
+    as.data.frame() 
+  names(dfArgs) <- c("arg","value")
+  dfArg_data_store_path <- dfArgs |>
+    subset(arg == '--data_store_path')$value
+  dfArg_data_store_expiry_days <- dfArgs |> 
+    subset(arg == '--data_store_expiry_days')$value
+  # WIP:not implemented yet:
+  # dfArg_out_format <- subset(dfArgs,arg == '--out_format')$value
 }
-
 
 # 
 # # example planned arguments
@@ -17,26 +33,21 @@ if (length(args)!=0) {
 # [5] "--data_store_expiry_days" "30"                      
 # --out_format csv --data_store_path /data/data_store_rnacen --data_store_expiry_days 30
 
-
-#Loading required package: pacman
-# There are currently 37 open connections and 163 connections available 
-# (with an additional 3 connections reserved)
-
-
-# Notes:
-# Allways expectes long named arguments.
-# - This script discards any column from the postgres database that
-# has a data type of "blob/raw"
-# - Play nice with the public database ! 
-# - Using feather to save downloads to disk, and only query the database if 
-# a previous download has expired (is older than x number of days).
-if (!require("pacman")) install.packages("pacman")
-pacman::p_load(DBI,RPostgres,RPostgreSQL,feather,dplyr,data.table,stringr)
-
 # Script scoped variable, could be wrapped up as inputs to a main function...
 data_schema_name <- 'rnacen'
-data_store_expiry_days <- 30
-data_store_path <- file.path(Sys.getenv('HOME'),"R_TEMP")
+
+if(length(dfArg_data_store_expiry_days) == 1) {
+  dfArg_data_store_expiry_days
+} else {
+  data_store_expiry_days <- 30
+}
+
+if(length(dfArg_data_store_path) == 1) {
+  data_store_path <- dfArg_data_store_path
+} else {
+  data_store_path <- file.path(Sys.getenv('HOME'),"R_TEMP")
+}
+
 
 # Connect to a specific postgres database i.e. Heroku 
 # https://rnacentral.org/help/public-database 
