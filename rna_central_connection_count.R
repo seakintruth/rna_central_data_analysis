@@ -6,6 +6,8 @@ if (length(args)!=0) {
   print(args)
   cat(args)
 }
+
+
 # 
 # # example planned arguments
 # ./rna_central_connection_count.R --out_format csv --data_store_path /data/data_store_rnacen --data_store_expiry_days 30
@@ -14,7 +16,8 @@ if (length(args)!=0) {
 # [3] "--data_store_path"        "/data/data_store_rnacen" 
 # [5] "--data_store_expiry_days" "30"                      
 # --out_format csv --data_store_path /data/data_store_rnacen --data_store_expiry_days 30
-#
+
+
 #Loading required package: pacman
 # There are currently 37 open connections and 163 connections available 
 # (with an additional 3 connections reserved)
@@ -49,6 +52,11 @@ con <- dbConnect(
 #---------------------------
 # Script Functions
 #---------------------------
+dbQueryAllFields <- function(dbTableName,dbConnection){
+  cat(paste0("Gettign list of fields for: ", dbTableName,'\n'))
+  dbConnection |> DBI::dbListFields(dbTableName)
+}
+
 should_run_query <- function(target_file,expiry_days) {
   if (file.exists(target_file)){
     (Sys.time() - (expiry_days*60*60*24)) > 
@@ -161,7 +169,7 @@ load_write_query <- function (
   } else {
     # add a column that contains queryName (so we know the provinence of the data)
     df_named_value <- as_tibble(queryName)
-    names(df_named_value) <- ".table_name"
+    names(df_named_value) <- ".object_name"
     base::assign(
       objectName, 
       base::get(objectName) |> 
@@ -200,15 +208,23 @@ info_current_connection_count <- load_write_query(
     silent = TRUE
 )
 
-
+db_pg_catalog_roles <-
+  "SELECT * FROM pg_catalog.pg_authid" |>
+  dbQuery_as_data_frame(conn)
 
 cat(
-  'There are currently',
+  "Max number of connection allowed by the 'reader' user is: ",
+  db_pg_catalog_roles |>
+    as.data.frame() |>
+    dplyr::filter(rolname == 'reader') |>
+    dplyr::select(rolconnlimit) |>
+    as.integer(),
+  '\nThere are currently',
   as.integer(info_current_connection_count$used[1]),
   'open connections and',
   as.integer(info_current_connection_count$max_conn[1]) - 
     as.integer(info_current_connection_count$used[1]),
-  'connections available \n\t (with an additional',
+  'total connections available \n\t (with an additional',
   as.integer(info_current_connection_count$res_for_super[1]),
   'connections reserved)\n'
 )  

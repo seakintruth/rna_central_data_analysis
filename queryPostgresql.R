@@ -27,6 +27,11 @@ con <- dbConnect(
 #---------------------------
 # Script Functions
 #---------------------------
+dbQueryAllFields <- function(dbTableName,dbConnection){
+  cat(paste0("Gettign list of fields for: ", dbTableName,'\n'))
+  dbConnection |> DBI::dbListFields(dbTableName)
+}
+
 should_run_query <- function(target_file,expiry_days) {
   if (file.exists(target_file)){
     (Sys.time() - (expiry_days*60*60*24)) > 
@@ -138,7 +143,7 @@ load_write_query <- function (
   } else {
     # add a column that contains queryName (so we know the provinence of the data)
     df_named_value <- as_tibble(queryName)
-    names(df_named_value) <- ".table_name"
+    names(df_named_value) <- ".object_name"
     base::assign(
       objectName, 
       base::get(objectName) |> 
@@ -188,14 +193,62 @@ list_dictionary_schema_table <-  stringr::str_c(
   sep='.'
 )
 
-# dictionary_data <- 
-#   lapply(list_dictionary_schema_table, 
-#          FUN=load_write_query, 
-#          dbConnection =  con,
-#          expiry_days = data_store_expiry_days,
-#          data_directory = data_store_path
-#   )
-# 
+dictionary_data <-
+  lapply(list_dictionary_schema_table,
+         FUN=load_write_query,
+         dbConnection =  con,
+         expiry_days = data_store_expiry_days,
+         data_directory = data_store_path
+  )
+
+is.integer64 <- function(x){
+  class(x)=="integer64"
+}
+
+load_write_table_size <- function(table_name,dbConnection){
+  query = paste0(
+    "SELECT pg_size_pretty(pg_total_relation_size('",table_name,"')) ",
+    "as pretty_size ,",
+    "pg_total_relation_size('",table_name,"') as size ",
+    "FROM  (select 1) as sole"
+  )  
+  dbQuery_as_data_frame(
+      query = query,
+      dbConnection = dbConnection
+    ) |>
+    cbind(table_name) |>
+    mutate_if(is.integer64, as.numeric)
+}
+
+#get a list of all tables and their sizes
+info_db_table_size <- list_schema_table  |> 
+  lapply(
+    FUN=load_write_table_size,
+    dbConnection = con
+  )
+
+df_info_db_table_size <- info_db_table_size |>
+  unlist() |>
+  matrix(ncol = 3, byrow = TRUE) |> 
+  as.data.frame()
+
+# Rename the df of table sizes
+names(df_info_db_table_size) <- names(info_db_table_size[[1]])
+
+# tmp <- df_info_db_table_size |> base::subset(size > 2^30)
+df_info_db_table_size$size <- df_info_db_table_size$size |>
+  as.numeric()
+
+#filter list of table names to those that are > 1 GB
+df_large_table <- df_info_db_table_size |> 
+  dplyr::filter(size > 2^30) |>
+  dplyr::select(table_name)
+
+#filter list of table names to those that are <= 1 GB
+df_small_table <- df_info_db_table_size |> 
+  dplyr::filter(size <= 2^30) |>
+  dplyr::select(table_name)
+
 # # # storing the entire database in memory is not a good idea
 # # # (you will run out of RAM)
 # # # the following will attempt to download every rnacen table
@@ -206,26 +259,164 @@ list_dictionary_schema_table <-  stringr::str_c(
 #        expiry_days = data_store_expiry_days,
 #        data_directory = data_store_path
 # )
-# 
 
-
- load_write_query(
-    queryName="info_current_connection_count",
-    query = 
-      paste0(
-        'select  * from ',
-        '(select count(*) used from pg_stat_activity) q1, ',
-        '(select setting::int res_for_super from pg_settings where name=$$superuser_reserved_connections$$) q2, ',
-        '(select setting::int max_conn from pg_settings where name=$$max_connections$$) q3'
-      ), 
-    dbConnection=con, 
-    expiry_days=data_store_expiry_days,
-    data_directory= data_store_path
+# load all small tables 
+lapply(df_small_table$table_name,
+       FUN=load_write_query,
+       dbConnection =  con,
+       expiry_days = data_store_expiry_days,
+       data_directory = data_store_path
 )
-  
 
+# Large tables will need to be handled differently...
+# df_large_table$table_name
+# Example of how to fetch data a chunk at a time
+# res <- dbSendQuery(con, "SELECT * FROM rnc_database")
+# while(!dbHasCompleted(res)){
+#   chunk <- dbFetch(res, n = 50)
+#   print(nrow(chunk))
+# }
+# str(res)
+# # Clear the result
+# dbClearResult(res)
 
+# the following still needs operational testing
+if(
+   should_run_query(
+     file.path(data_store_path,"dbRna_table_has_field.feather"),
+     data_store_expiry_days
+   )
+ ){
+   # build a listing of all fields for each table
+   dbRna_list_table_fields <- list_schema_table |>
+     lapply(FUN=dbQueryAllFields, dbConnection=con)
+   
+   dbRna_possible_fields <-  dbRna_list_table_fields |>
+     unlist() |> as.data.frame() |> dplyr::distinct() |> setNames(c("field_names"))
+   
+   # populate an empty data.table
+   dbRna_table_has_field <-
+     matrix(
+       rep(0L,(count(dbRna_possible_fields)$n)* count(dbRna_list_tables)$n),
+       ncol = count(dbRna_possible_fields)$n,
+       nrow = count(dbRna_list_tables)$n
+     ) |>
+     data.frame() |>
+     cbind.data.frame(
+       data.frame(
+         matrix(
+           rep("_",(count(dbRna_possible_fields)$n)* count(dbRna_list_tables)$n),
+           ncol = 1,
+           nrow = count(dbRna_list_tables)$n
+         )
+       )
+     ) |>
+     setNames(
+       c(
+         dbRna_possible_fields$field_names,
+         "schema_table_name"
+       )
+     )
+   
+   # Re-order variables (put schema_table_name first)
+   dbRna_table_has_field <-
+     dbRna_table_has_field |>
+     dplyr::select(
+       c("schema_table_name",
+         dbRna_possible_fields$field_names |> base::sort()
+       )
+     )
+   
+   # fill the table name data
+   dbRna_table_has_field$schema_table_name <- dbRna_list_tables$V1
+   
+   # fill the rest of the data table
+   # [TODO] could re-write this for loop as an lapply, but this is fast enough
+   int_row <- 0L
+   for (field_list in dbRna_list_table_fields) {
+     int_row <- int_row + 1L
+     # update a row of the data.table in place
+     dbRna_table_has_field |>
+       data.table::set(i=int_row,j=field_list,value=1L)
+   }
+   # [End TODO]
+   rm(dbRna_possible_fields)
+   
+   dbRna_table_has_field |>
+     feather::write_feather(
+       file.path(data_store_path,"dbRna_table_has_field.feather")
+     )
+ } else {
+   dbRna_table_has_field <- feather::read_feather(
+     file.path(data_store_path,"dbRna_table_has_field.feather")
+   )
+ }
+ 
+ dbRna_other_objects <- RPostgres::dbListObjects(con)
+ 
+ # if speed is a problem, may need to re-write the REGEX in to a single statement.
+ dbRna_other_objects$object_type <-
+   dbRna_other_objects$table |>
+   as.character() |>
+   stringr::str_replace('(.*?)=','') |>
+   stringr::str_replace('=(.*)','') |>
+   stringr::str_replace_all(' ','') |>
+   stringr::str_replace_all('c\\(','')
+ 
+ dbRna_other_objects <- dbRna_other_objects |>
+   dplyr::filter(object_type != 'table')
+ 
+ dbRna_other_objects$object_name <-
+   dbRna_other_objects$table |>
+   as.character() |>
+   stringr::str_replace('(.*?)=','') |>
+   stringr::str_replace('(.*?)=','') |>
+   stringr::str_replace_all('\\)','') |>
+   stringr::str_replace_all(' ','')
+ 
+ # Using gsub instead of REGEX for stripping out the \" characters
+ dbRna_other_objects$object_name <-gsub(
+   '\"', "", dbRna_other_objects$object_name, fixed = TRUE
+ )
+ 
+ ### look at some stats about all the tables that have a timestamp field
+ contains_timestamp <- function(list_table_fields){
+   !is.na(match('timestamp',list_table_fields))
+ }
+ 
+ table_has_create_field <- dbRna_list_table_fields[,1] |>
+   lapply(FUN=contains_timestamp)
+ 
+ tables_with_create_field <-table_has_create_field |>
+   cbind(dbRna_list_table_fields[,2]) |>
+   as.data.frame() |>
+   dplyr::filter(table_has_create_field == TRUE) |>
+   dplyr::select(2)
+ 
+ 
+ query_numeric_field_stats <- function(
+    schema_table_name,
+    dbConnection,
+    field_name_of_numeric="timestamp" # default field
+ ){
+   query <-
+     paste0(
+       'SELECT ',
+       'MIN("',field_name_of_numeric,'") as "min_',field_name_of_numeric,', ',
+       'MAX("',field_name_of_numeric,'") as "max_',field_name_of_numeric,', ',
+       'count("',field_name_of_numeric,'") as "count_',field_name_of_numeric,', ',
+       'count(*) as count ',
+       'FROM "', schema_table_name, '" '
+       #, 'WHERE "', schema_table_name, '"."',field_name_of_numeric,'" IS NOT NULL'
+     )
+   query |> dbQuery_as_data_frame(dbConnection=dbConnection)
+ }
+ 
+db_timestamp_stats <- tables_with_create_field[,1] |>
+ lapply(FUN=query_numeric_field_stats, dbConnect=con)
 
+db_timestamp_stats |> skimr::skim()
+db_timestamp_stats |> summary()
 
 # Disconnect from the database 
 dbDisconnect(con)
